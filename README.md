@@ -30,4 +30,75 @@ Always run the commands below inside the Nix shell. The system `/usr/bin/yosys` 
 
 ## Commands run (in order)
 
-TODO
+All commands are run from the repository root, inside the Nix shell.
+
+### Part A: RTL design and verification
+
+#### A1. Compile and run the testbench
+
+```sh
+iverilog -g2012 -o sim tb/tb_mult.v rtl/full_adder.v rtl/mult_array.v
+vvp sim
+```
+
+Expected output:
+
+```
+VCD info: dumpfile mult.vcd opened for output.
+PASS: 256 vectors checked, 0 errors
+tb/tb_mult.v:...: $finish called at 7700000 (1ps)
+```
+
+The testbench (`tb/tb_mult.v`):
+- generates a 10 ns clock and holds `rst_n` low for the first 2 cycles (0–20 ns);
+- applies all 256 pairs (`a`, `b` = 0…15) on falling clock edges, one pair every 30 ns;
+- checks two things for every pair:
+  - **latency:** after the first rising edge, `p` must still hold the previous product
+    (prints `LATENCY: ...` if `p` changes too early);
+  - **product:** after the second rising edge, `p` must equal `a * b`
+    (prints `MISMATCH: ...` otherwise);
+- prints one summary line, `PASS: 256 vectors checked, 0 errors` or `FAIL: ... N errors`,
+  where N is the number of failing pairs;
+- writes the waveform to `mult.vcd`.
+
+Re-run both commands after editing any `.v` file. `vvp sim` alone runs the old compiled version.
+`sim` and `mult.vcd` are in `.gitignore`.
+
+#### A2. View the waveform in GTKWave
+
+```sh
+gtkwave mult.vcd &
+```
+
+1. In the **SST** panel (top left), click `tb_mult`. Select `clk`, `rst_n`, `a`, `b` and `p`
+   (Ctrl-click) and click **Append**. Use the signals under `tb_mult`, not under `dut`.
+2. Select `a`, `b` and `p` in the **Signals** panel, then right-click → **Data Format → Decimal**.
+3. Go to the example. Pair number `k = a × 16 + b` is applied at `30 + 30k` ns:
+
+   | Example (roll number used) | Inputs applied | Edge 1: inputs captured, `p` unchanged | Edge 2: `p` updates |
+   |---|---|---|---|
+   | 10 × 7 (2023102025) | 5040 ns | 5045 ns (`p` = 60, previous product) | 5055 ns (`p` = 70) |
+   | 5 × 7 (2023112010)  | 2640 ns | 2645 ns (`p` = 30, previous product) | 2655 ns (`p` = 35) |
+
+   Type the range into the **From** / **To** boxes in the toolbar (for example `5030 ns` to
+   `5070 ns`) and press Enter.
+4. Mark the latency: **Markers → Drop Named Marker** at the input change, edge 1 and edge 2.
+   `p` changes only at edge 2, which shows the 2-cycle latency.
+5. After re-running the simulation, use **File → Reload Waveform** (Ctrl+Shift+R).
+
+#### A3. Check that the testbench catches errors (Part A task 6)
+
+Temporarily break the full adder, re-run, confirm `FAIL`, then restore the file:
+
+```sh
+sed -i 's/assign sum  = a ^ b ^ cin;/assign sum  = a ^ b;/' rtl/full_adder.v
+grep "assign sum" rtl/full_adder.v      # shows: assign sum  = a ^ b;
+iverilog -g2012 -o sim tb/tb_mult.v rtl/full_adder.v rtl/mult_array.v
+vvp sim | grep -E "^(PASS|FAIL)"        # FAIL: 256 vectors checked, 95 errors
+
+git checkout rtl/full_adder.v           # restore the committed version
+iverilog -g2012 -o sim tb/tb_mult.v rtl/full_adder.v rtl/mult_array.v
+vvp sim | grep -E "^(PASS|FAIL)"        # PASS: 256 vectors checked, 0 errors
+```
+
+`vvp sim | head` shows the first mismatches; open the waveform at the first mismatch's time to debug.
