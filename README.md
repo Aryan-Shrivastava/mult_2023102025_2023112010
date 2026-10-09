@@ -102,3 +102,44 @@ vvp sim | grep -E "^(PASS|FAIL)"        # PASS: 256 vectors checked, 0 errors
 ```
 
 `vvp sim | head` shows the first mismatches; open the waveform at the first mismatch's time to debug.
+
+### Part B: Logic synthesis with Yosys
+
+#### B1. Synthesize
+
+```sh
+yosys -c synth/synth.tcl
+```
+
+`synth/synth.tcl` reads the RTL, runs `synth -top mult_array -flatten`, maps flip-flops
+(`dfflibmap`) and logic (`abc`) to `sky130_fd_sc_hd` cells using the typical-corner Liberty file
+(`$PDK_ROOT/sky130A/.../sky130_fd_sc_hd__tt_025C_1v80.lib`), and writes:
+- `synth/mult_array_stat.rpt`: cell counts and area;
+- `synth/mult_array_netlist.v`: the gate-level netlist (only `sky130_fd_sc_hd__*` cells).
+
+`PDK_ROOT` must be set (see Environment), or Yosys stops with `can't read "::env(PDK_ROOT)"`.
+
+#### B2. Read the results
+
+```sh
+cat synth/mult_array_stat.rpt
+```
+
+- **Total cells:** the number on the `cells` line.
+- **Flip-flops:** the count of `sky130_fd_sc_hd__dfrtp_1` (should be 16).
+- **Total area:** the `Chip area for module '\mult_array'` line.
+- **Flip-flop area and %:** the `of which used for sequential elements` line
+  (= 16 × area of one `dfrtp_1`).
+
+#### B3. Simulate the synthesized netlist
+
+```sh
+CELLS=$PDK_ROOT/sky130A/libs.ref/sky130_fd_sc_hd/verilog
+iverilog -g2012 -DFUNCTIONAL -DUNIT_DELAY=#1 -o gls \
+  tb/tb_mult.v $CELLS/primitives.v $CELLS/sky130_fd_sc_hd.v synth/mult_array_netlist.v
+vvp gls
+```
+
+Expected: `PASS: 256 vectors checked, 0 errors`. Same testbench as Part A, but the design is now the
+netlist, with the SKY130 cell models (`primitives.v`, `sky130_fd_sc_hd.v`) providing each cell's
+behaviour. `gls` is in `.gitignore`.
