@@ -10,6 +10,7 @@ Each section answers one question. New questions are added at the end.
 4. [Which parts of the assignment force the ripple-carry structure?](#4-which-parts-of-the-assignment-force-the-ripple-carry-structure)
 5. [What is RTL? Is it gate-level Verilog?](#5-what-is-rtl-is-it-gate-level-verilog)
 6. [How do I run the testbench and GTKWave myself?](#6-how-do-i-run-the-testbench-and-gtkwave-myself)
+7. [How do I check that the Part C timing results are correct?](#7-how-do-i-check-that-the-part-c-timing-results-are-correct)
 
 ---
 
@@ -510,3 +511,92 @@ Useful variants:
 | GTKWave shows old waveform | GTKWave doesn't reload automatically | **File → Reload Waveform** (Ctrl+Shift+R) |
 | `a`, `b`, `p` shown as hex | default format | right-click → Data Format → Decimal |
 | GTKWave doesn't open | started outside a graphical session | run it from a terminal in your desktop session |
+
+---
+
+## 7. How do I check that the Part C timing results are correct?
+
+Run everything from the repository root, inside the nix-shell with `env.sh` sourced. Note that
+every run of `sta/sta.tcl` overwrites `sta/mult_array_timing.rpt`; finish with a plain
+`sta sta/sta.tcl` (T = 10 ns) so the committed report is restored.
+
+### Check 1: Rerun and compare
+```bash
+sta sta/sta.tcl                 # worst slack max 7.017
+T=2.98 sta sta/sta.tcl          # worst slack max -0.003
+sta sta/sta.tcl                 # restore the T = 10 ns report
+git diff sta/                   # no output = identical to the committed files
+```
+
+### Check 2: Redo the arithmetic from the report by hand
+Open `sta/mult_array_timing.rpt` and find the path in **Path Group: clk** (the first path in the
+file is the reset recovery check, in group `asynchronous`, which is not the setup path).
+
+```
+data arrival time   = 2.852 ns   (clock-to-Q 0.396 + 9 logic cells)
+library setup time  = 0.131 ns   (the capture flip-flop needs D stable this long before the edge)
+required time       = 10.000 - 0.131 = 9.869 ns
+slack               = 9.869 - 2.852  = 7.017 ns        ✓ matches report_worst_slack
+
+Tmin = arrival + setup = 2.852 + 0.131 = 2.983 ns   = 10 - 7.017   ✓
+Fmax = 1000 / 2.983 = 335.2 MHz
+```
+Also add up the **Delay** column of the path yourself. It should give 2.852.
+
+### Check 3: Slack must change one-for-one with the period
+With an ideal clock, shortening the period by Δ reduces every setup slack by exactly Δ, and the
+slack crosses 0 at T_min:
+
+| T (ns) | Worst setup slack (ns) |
+|---|---|
+| 10.0 | 7.017 |
+| 3.00 | 0.017 |
+| 2.99 | 0.007 |
+| **2.983** | **0.000** |
+| 2.98 | −0.003 |
+| 2.97 | −0.013 |
+
+```bash
+for t in 3.00 2.99 2.983 2.98 2.97; do echo -n "T=$t  "; T=$t sta sta/sta.tcl | grep "worst slack"; done
+sta sta/sta.tcl     # restore the report
+```
+If the slack changed by anything other than Δ, the clock or the constraints would be wrong.
+
+### Check 4: Nothing is unconstrained, and the other path types aren't limiting
+STA only checks paths it knows about. A missing clock or delay would leave paths unchecked
+and make F_max look better than it is. Make a scratch script, *not* in the repo (for example
+`~/sta_check.tcl`), with the same first 7 lines as `sta.tcl` (period 2.98), then:
+```tcl
+check_setup -verbose                    ;# prints nothing if no unclocked/unconstrained/loop issues
+puts [llength [all_registers -clock clk]]                                       ;# 16
+report_checks -from [delete_from_list [all_inputs] [get_ports {clk rst_n}]] -format end
+report_checks -to [all_outputs] -format end
+report_worst_slack -min -digits 3       ;# hold check
+exit
+```
+Expected at T = 2.98 ns:
+
+| Check | Result | Meaning |
+|---|---|---|
+| `check_setup -verbose` | no output | no unclocked registers, unconstrained endpoints or combinational loops |
+| registers on `clk` | 16 | all 16 flip-flops are timed |
+| input → input register | slack 1.88 ns | not limiting |
+| output register → output pin | slack 1.67 ns | not limiting |
+| reset recovery | slack 2.208 ns | not limiting |
+| hold (min) | slack 0.534 ns | no hold violations |
+
+So the register-to-register path really is what sets T_min.
+
+### Check 5: Does the path make sense for this design?
+- **Start** `a_r[1]` and **end** `p[7]`: `p[7]` is the final carry `c3[4]`, the last output to
+  settle. A path ending at a low bit like `p[0]` would be suspicious, because `p[0]` is a single AND gate.
+- The path goes row 1 → row 2 → row 3, then ripples through all 4 carries of row 3 (3 `maj3`
+  carry cells in a row), which is the ripple-row structure.
+- 7 full adders on the path against the estimate of about 2N = 8 is the right order of size.
+
+### Check 6: Optional independent cross-checks
+- **Different tool:** OpenROAD contains the same timing engine. `openroad` accepts the same
+  commands, so running `sta.tcl` in it should give identical numbers. It isn't independent, but
+  it confirms the setup.
+- **Synthesis sanity:** re-running `yosys -c synth/synth.tcl` must reproduce the committed
+  netlist exactly (`git diff synth/` empty). Otherwise the STA was run on a different netlist.
