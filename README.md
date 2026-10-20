@@ -10,7 +10,8 @@
 ## Environment
 
 All tools (Icarus Verilog, GTKWave, Yosys, OpenSTA, OpenROAD, KLayout, Magic, Netgen, LibreLane)
-come from the LibreLane Nix shell. The SKY130 PDK is managed by `ciel`.
+come from the LibreLane Nix shell instead of the IIC-OSIC-TOOLS Docker image. The SKY130 PDK is
+managed by `ciel`.
 
 ```sh
 # one-time: enable the PDK version pinned by LibreLane
@@ -25,8 +26,22 @@ cd ~/Documents/DVD/tools/librelane && nix develop
 cd ~/Documents/DVD/mult_array
 ```
 
+If `nix develop` hangs before the shell opens, the FOSSi binary cache is unreachable. All tools are
+already installed, so use `nix develop --offline`.
+
 Always run the commands below inside the Nix shell. The system `/usr/bin/yosys` (0.9) and
 `/usr/bin/iverilog` (11.0) are older versions and must not be used.
+
+| Tool | Version |
+|---|---|
+| LibreLane | 3.0.14 |
+| Icarus Verilog | 13.0 (devel) |
+| Yosys | 0.62 |
+| OpenSTA | 2.7.0 |
+| OpenROAD | dcf36133 |
+| KLayout | 0.30.7 |
+| Magic | 8.3.623 |
+| SKY130 PDK (open_pdks) | 8afc8346a57fe1ab7934ba5a6056ea8b43078e71 |
 
 ## Commands run (in order)
 
@@ -207,3 +222,127 @@ End point: `_107_` (`dfrtp_1`, output register `p[7]`, D = `c3[4]`).
 
 The signal mapping was found by simulating the netlist and the RTL together on all 256 inputs
 and matching each netlist wire on the path to an RTL signal.
+
+### Part D: Physical design (RTL to GDSII) with LibreLane
+
+#### D1. Configuration
+
+`pnr/config.json` sets `DESIGN_NAME`, `VERILOG_FILES`, `CLOCK_PORT`, `FP_SIZING` = `"absolute"` and
+`DIE_AREA` = `[0, 0, 150, 150]` as required, and
+
+```
+CLOCK_PERIOD = 1.2 × Tmin, rounded up to the next 0.5 ns
+             = 1.2 × 2.983 = 3.58  →  4.0 ns
+```
+
+#### D2. Run the flow
+
+```sh
+cd pnr
+librelane config.json
+cd ..
+```
+
+Each run creates `pnr/runs/RUN_<date>_<time>/` (in `.gitignore`; it is large). The flow ends with
+`Flow complete.` and a summary listing `Antenna`, `LVS` and `DRC`, each `Passed ✅`.
+
+#### D3. Runs
+
+Setup slack is judged at the typical corner (`nom_tt_025C_1v80`), the same corner as Part C.
+LibreLane also reports the slow corner (`ss_100C_1v60`) as a warning only; it is recorded below
+for completeness.
+
+| Run | CLOCK_PERIOD | Setup slack, tt (ns) | Setup slack, all corners (ns) | DRC | LVS | Result |
+|---|---|---|---|---|---|---|
+| `RUN_2026-10-21_00-43-05` | 4.0 ns | +1.167 | −1.254 (`max_ss_100C_1v60`) | 0 | 0 | ✅ final |
+
+#### D4. Copy the results from the final run
+
+```sh
+RUN=$(ls -d pnr/runs/RUN_* | tail -1)
+cp $RUN/final/metrics.json pnr/metrics.json
+cp $RUN/final/gds/mult_array.gds pnr/mult_array.gds
+```
+
+#### D5. Read the numbers from `pnr/metrics.json`
+
+```sh
+grep -E '"design__instance__count(__stdcell)?"|core__area|die__area|"route__wirelength"' pnr/metrics.json
+grep -E '"timing__setup__ws(__corner:nom_tt_025C_1v80)?"' pnr/metrics.json
+grep -E '"(magic|klayout)__drc_error__count"|"route__drc_errors"|"design__lvs_error__count"' pnr/metrics.json
+```
+
+| Metric | Key | Value |
+|---|---|---|
+| Cells after place and route | `design__instance__count` | 4795 |
+| Core area | `design__core__area` | 17759.5 µm² |
+| Die area | `design__die__area` | 22500 µm² |
+| Wirelength | `route__wirelength` | 2610 µm |
+| Setup slack (tt) | `timing__setup__ws__corner:nom_tt_025C_1v80` | +1.167 ns |
+| DRC errors | `magic__drc_error__count`, `klayout__drc_error__count`, `route__drc_errors` | 0, 0, 0 |
+| LVS errors | `design__lvs_error__count` | 0 |
+
+```
+Post-route Fmax = 1000 / (CLOCK_PERIOD − setup slack) = 1000 / (4.0 − 1.167) = 353.0 MHz
+```
+
+#### D6. Cells added by the flow
+
+Counted from the final placed design (`$RUN/final/def/mult_array.def`) by cell name:
+
+```sh
+DEF=$(ls -d pnr/runs/RUN_* | tail -1)/final/def/mult_array.def
+awk '/^COMPONENTS/{f=1;next} /^END COMPONENTS/{f=0} f && /^ *-/{print $3}' $DEF \
+  | sed 's/sky130_fd_sc_hd__//' | sort | uniq -c | sort -rn
+```
+
+| Kind | Cells | Count |
+|---|---|---|
+| Decap | `decap_3` | 4170 |
+| Fill | `fill_1`, `fill_2` | 276 |
+| Tap | `tapvpwrvgnd_1` | 245 |
+| Buffers | `clkdlybuf4s25_1` ×19, `buf_2` ×12, `clkbuf_16` ×3 (clock tree) | 34 |
+| Logic and flip-flops (16 × `dfrtp`) | | 70 |
+| **Total** | | **4795** |
+
+#### D7. View the layout
+
+```sh
+klayout pnr/mult_array.gds
+```
+
+#### D8. Simulate the post-route netlist
+
+LVS proves the layout matches the post-route netlist; these runs prove that netlist still
+multiplies correctly. LibreLane re-synthesizes the design and adds buffers, so it is not the Part B
+netlist. Temporary files go into the run folder, which is in `.gitignore`.
+
+Functional simulation with the Part A testbench:
+
+```sh
+RUN=$(ls -d pnr/runs/RUN_* | tail -1)
+CELLS=$PDK_ROOT/sky130A/libs.ref/sky130_fd_sc_hd/verilog
+iverilog -g2012 -DFUNCTIONAL -DUNIT_DELAY=#1 -o $RUN/gls_pr \
+  tb/tb_mult.v $CELLS/primitives.v $CELLS/sky130_fd_sc_hd.v $RUN/final/nl/mult_array.nl.v
+(cd $RUN && vvp -n gls_pr | grep -E "^(PASS|FAIL)")    # PASS: 256 vectors checked, 0 errors
+```
+
+Timing simulation with the post-route typical-corner delays (SDF) at the real 4.0 ns clock:
+
+```sh
+# the PDK model of the unused lpflow_bleeder_1 cell breaks Icarus in timing mode; drop that line
+grep -v "(SHORT => VPWR)" $CELLS/sky130_fd_sc_hd.v > $RUN/cells_timing.v
+SDF=$PWD/$RUN/final/sdf/nom_tt_025C_1v80/mult_array__nom_tt_025C_1v80.sdf
+sed -e 's/localparam CLK_PERIOD = 10;/localparam CLK_PERIOD = 4;/' \
+    -e "s|\$dumpvars(0, tb_mult);|\$dumpvars(0, tb_mult); \$sdf_annotate(\"$SDF\", dut);|" \
+    tb/tb_mult.v > $RUN/tb_sdf.v
+iverilog -g2012 -gspecify -ginterconnect -o $RUN/tsim \
+  $RUN/tb_sdf.v $CELLS/primitives.v $RUN/cells_timing.v $RUN/final/nl/mult_array.nl.v \
+  2> $RUN/tsim_compile.log
+(cd $RUN && vvp -n tsim | grep -E "^(PASS|FAIL)")      # PASS: 256 vectors checked, 0 errors
+```
+
+The compile log holds about 480 `Timing checks are not supported` warnings, and the simulation
+reports `TIMINGCHECK not supported` and `Chosen value not defined` twice. All are harmless: Icarus
+skips setup/hold checks, which STA covers. With `CLOCK_PERIOD = 2` in the `sed` line
+the same simulation fails, which shows the delays are applied.
