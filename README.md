@@ -143,3 +143,67 @@ vvp gls
 Expected: `PASS: 256 vectors checked, 0 errors`. Same testbench as Part A, but the design is now the
 netlist, with the SKY130 cell models (`primitives.v`, `sky130_fd_sc_hd.v`) providing each cell's
 behaviour. `gls` is in `.gitignore`.
+
+### Part C: Static timing analysis with OpenSTA
+
+#### C1. Run at T = 10 ns
+
+```sh
+sta sta/sta.tcl
+```
+
+`sta/sta.tcl` reads the typical-corner Liberty file and `synth/mult_array_netlist.v`, defines a
+clock on `clk` with period `T` (default 10 ns), sets a 1.0 ns input delay on every input except
+`clk` and a 1.0 ns output delay on every output, prints the worst setup slack and writes the
+critical path to `sta/mult_array_timing.rpt`. The script ends with `exit`, so `sta` returns to
+the shell instead of waiting at its `%` prompt.
+
+Output:
+
+```
+Clock period T = 10.0 ns
+worst slack max 7.017
+```
+
+#### C2. Find Tmin and Fmax, then re-run at Tmin
+
+```
+Tmin = T - WNS = 10 - 7.017 = 2.983 ns   (rounded to 0.01 ns: 2.98 ns)
+Fmax = 1000 / Tmin = 1000 / 2.983 = 335.2 MHz
+```
+
+```sh
+T=2.98 sta sta/sta.tcl
+```
+
+Output:
+
+```
+Clock period T = 2.98 ns
+worst slack max -0.003
+```
+
+The slack is 0.003 ns below zero because 2.98 ns is 2.983 ns rounded down, which confirms Tmin.
+The critical path is the same at both periods. The committed `sta/mult_array_timing.rpt` is from
+the T = 10 ns run (`sta sta/sta.tcl` reproduces it).
+
+#### C3. Critical path (from `sta/mult_array_timing.rpt`, path group `clk`)
+
+Start point: `_109_` (`dfrtp_1`, input register `a_r[1]`).
+End point: `_107_` (`dfrtp_1`, output register `p[7]`, D = `c3[4]`).
+
+| # | Cell | Type | Delay (ns) | Arrival (ns) | Signal in the RTL |
+|---|---|---|---|---|---|
+| 1 | `_109_` | `dfrtp_1` (clock to Q) | 0.396 | 0.396 | `a_r[1]` |
+| 2 | `_054_` | `a22o_1` | 0.248 | 0.644 | row 1, full adder 1 (`pp1[1]`, `r0[1]`), merged with the partial-product ANDs |
+| 3 | `_055_` | `and3_1` | 0.181 | 0.824 | row 1, full adder 1 |
+| 4 | `_058_` | `nor3_1` | 0.276 | 1.101 | `c2[1]`: carry of row 2, full adder 0 |
+| 5 | `_070_` | `xnor3_1` | 0.453 | 1.554 | `s2[1]` (= `r2[0]`): sum of row 2, full adder 1 |
+| 6 | `_071_` | `and3_1` | 0.209 | 1.763 | `c3[1]`: carry of row 3, full adder 0 (`pp3[0]` AND `r2[0]`) |
+| 7 | `_085_` | `maj3_1` | 0.361 | 2.124 | `c3[2]`: carry of row 3, full adder 1 |
+| 8 | `_097_` | `maj3_1` | 0.379 | 2.503 | `c3[3]`: carry of row 3, full adder 2 |
+| 9 | `_098_` | `maj3_1` | 0.349 | 2.852 | `c3[4]`: carry of row 3, full adder 3 |
+| | `_107_` | `dfrtp_1` (setup 0.131) | | 2.852 | `p[7]` |
+
+The signal mapping was found by simulating the netlist and the RTL together on all 256 inputs
+and matching each netlist wire on the path to an RTL signal.
