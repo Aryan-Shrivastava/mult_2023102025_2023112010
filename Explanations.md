@@ -533,7 +533,7 @@ Open `sta/mult_array_timing.rpt` and find the path in **Path Group: clk** (the f
 file is the reset recovery check, in group `asynchronous`, which is not the setup path).
 
 ```
-data arrival time   = 2.852 ns   (clock-to-Q 0.396 + 9 logic cells)
+data arrival time   = 2.852 ns   (clock-to-Q 0.396 + 8 logic cells)
 library setup time  = 0.131 ns   (the capture flip-flop needs D stable this long before the edge)
 required time       = 10.000 - 0.131 = 9.869 ns
 slack               = 9.869 - 2.852  = 7.017 ns        ✓ matches report_worst_slack
