@@ -4,8 +4,8 @@
 
 | Name | Roll number |
 |------|-------------|
-| TODO | TODO        |
-| TODO | TODO        |
+| Aryan Shrivastava | 2023102025 |
+| Kiruba Pandi Selvakumar | 2023112010 |
 
 ## Environment
 
@@ -248,9 +248,14 @@ Each run creates `pnr/runs/RUN_<date>_<time>/` (in `.gitignore`; it is large). T
 
 #### D3. Runs
 
-Setup slack is judged at the typical corner (`nom_tt_025C_1v80`), the same corner as Part C.
-LibreLane also reports the slow corner (`ss_100C_1v60`) as a warning only; it is recorded below
-for completeness.
+Setup slack is judged at the typical corner (`nom_tt_025C_1v80`), the same corner as Part C,
+which is defined at the typical corner only. At that corner the first run already has positive
+slack (+1.167 ns), so no further runs were needed.
+
+`metrics.json` also contains the worst slack over all corners, `timing__setup__ws` = −1.254 ns.
+It comes from the slow corner (`ss_100C_1v60`: slow transistors, 100 °C, 1.60 V), which
+LibreLane reports as a warning only; the flow still ends with `Flow complete.` It is recorded
+below for completeness.
 
 | Run | CLOCK_PERIOD | Setup slack, tt (ns) | Setup slack, all corners (ns) | DRC | LVS | Result |
 |---|---|---|---|---|---|---|
@@ -279,6 +284,7 @@ grep -E '"(magic|klayout)__drc_error__count"|"route__drc_errors"|"design__lvs_er
 | Die area | `design__die__area` | 22500 µm² |
 | Wirelength | `route__wirelength` | 2610 µm |
 | Setup slack (tt) | `timing__setup__ws__corner:nom_tt_025C_1v80` | +1.167 ns |
+| Setup slack (all corners, for reference) | `timing__setup__ws` | −1.254 ns (`ss_100C_1v60`, warning only) |
 | DRC errors | `magic__drc_error__count`, `klayout__drc_error__count`, `route__drc_errors` | 0, 0, 0 |
 | LVS errors | `design__lvs_error__count` | 0 |
 
@@ -301,8 +307,8 @@ awk '/^COMPONENTS/{f=1;next} /^END COMPONENTS/{f=0} f && /^ *-/{print $3}' $DEF 
 | Decap | `decap_3` | 4170 |
 | Fill | `fill_1`, `fill_2` | 276 |
 | Tap | `tapvpwrvgnd_1` | 245 |
-| Buffers | `clkdlybuf4s25_1` ×19, `buf_2` ×12, `clkbuf_16` ×3 (clock tree) | 34 |
-| Logic and flip-flops (16 × `dfrtp`) | | 70 |
+| Buffers | `clkdlybuf4s25_1` ×19 (inputs, outputs, reset fanout), `buf_2` ×12 (timing repair), `clkbuf_16` ×3 (clock tree), `dlygate4sd3_1` ×2 (hold fix) | 36 |
+| Logic and flip-flops | 52 logic gates, 16 × `dfrtp_2` | 68 |
 | **Total** | | **4795** |
 
 #### D7. View the layout
